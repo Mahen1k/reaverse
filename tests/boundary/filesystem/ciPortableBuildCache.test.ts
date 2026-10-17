@@ -6,11 +6,14 @@ import {
   readdir,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
+import { parse } from "yaml";
+import { z } from "zod";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
 const script = fileURLToPath(
@@ -21,6 +24,114 @@ const second = { taskId: "artifacts:skills", hash: "fedcba9876543210" };
 const plan = { tasks: [first, second] };
 const prefix = "rea-portable-build-v2-Linux-X64-toolchain";
 const output = ".cache/ci-build-cache";
+
+it.each([
+  { cacheMaxAge: "7d", cacheMaxSize: "0" },
+  { cacheMaxAge: "0", cacheMaxSize: "1B" },
+])(
+  "retains completed task entries through publication under $cacheMaxAge/$cacheMaxSize retention",
+  async (retention) => {
+    const root = await fixture();
+    const environment = z
+      .object({
+        jobs: z.object({
+          build: z.object({
+            env: z.record(z.string(), z.string()).default({}),
+          }),
+        }),
+      })
+      .parse(
+        parse(
+          await readFile(
+            new URL("../../../.github/workflows/ci.yml", import.meta.url),
+            "utf8",
+          ),
+        ),
+      ).jobs.build.env;
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({
+        name: "cache-fixture",
+        private: true,
+        packageManager: "npm@11.16.0",
+        scripts: { build: "node build.mjs" },
+      }),
+    );
+    await writeFile(
+      join(root, "package-lock.json"),
+      JSON.stringify({
+        name: "cache-fixture",
+        lockfileVersion: 3,
+        packages: { "": { name: "cache-fixture" } },
+      }),
+    );
+    await writeFile(
+      join(root, "turbo.json"),
+      JSON.stringify({
+        ...retention,
+        tasks: { build: { inputs: ["build.mjs"], outputs: ["out.txt"] } },
+      }),
+    );
+    await writeFile(
+      join(root, "build.mjs"),
+      'import {writeFileSync} from "node:fs";writeFileSync("out.txt", "verified output");',
+    );
+    const turbo = fileURLToPath(
+      new URL("../../../node_modules/turbo/bin/turbo", import.meta.url),
+    );
+    const prepare = (...args: string[]) => {
+      const result = spawnSync(
+        process.execPath,
+        [turbo, "run", "build", ...args],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            ...environment,
+            TURBO_CACHE_DIR: join(root, ".turbo/cache"),
+            TURBO_TELEMETRY_DISABLED: "1",
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout;
+    };
+    prepare();
+    const before = await inventory(root, ".turbo/cache");
+    const old = new Date("2000-01-01T00:00:00Z");
+    for (const [name] of before) {
+      if (name === undefined) throw new Error("Missing cache file name");
+      await utimes(join(root, ".turbo/cache", name), old, old);
+    }
+    const result = run(root, "snapshot", prepare("--dry=json"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(await inventory(root, output)).toEqual(before);
+    expect(await inventory(root, ".turbo/cache")).toEqual(before);
+    expect(await readFile(join(root, "out.txt"), "utf8")).toBe(
+      "verified output",
+    );
+    const normalEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      TURBO_CACHE_DIR: join(root, ".turbo/cache"),
+      TURBO_TELEMETRY_DISABLED: "1",
+    };
+    delete normalEnvironment.TURBO_CACHE_MAX_AGE;
+    delete normalEnvironment.TURBO_CACHE_MAX_SIZE;
+    const pruned = spawnSync(
+      process.execPath,
+      [turbo, "run", "build", "--dry=json"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: normalEnvironment,
+      },
+    );
+    expect(pruned.status, pruned.stderr).toBe(0);
+    expect(await readdir(join(root, ".turbo/cache"))).toEqual([]);
+    expect(await inventory(root, output)).toEqual(before);
+  },
+);
 
 function run(root: string, mode: "key" | "snapshot", input: unknown = plan) {
   const result = spawnSync(process.execPath, [script, mode], {

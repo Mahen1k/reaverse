@@ -1,10 +1,10 @@
 import { z } from "zod";
 
 import {
-  browserAllowedOriginsSchema,
   browserEndpointSchema,
   recordedBrowserObservationEndpointSchema,
 } from "../browserObservation.js";
+import { browserWorkerEvidenceScopeSchema } from "../browserWorkerEvidenceScope.js";
 import {
   webPageInspectionSchema,
   type WebPageInspection,
@@ -188,11 +188,7 @@ const parseBrowserCapture = (
     evidence,
     {
       kind: "browser",
-      targetId: inspection.target.target_id,
-      targetOrigin: inspection.target.origin,
-      sourceIncluded: inspection.scripts.items.some(
-        ({ source }) => source.included,
-      ),
+      inspection,
     },
     path,
   );
@@ -201,7 +197,17 @@ const parseBrowserCapture = (
     evidence,
     inspection,
     captureSha256: digestCanonicalValue(inspection, "Runtime reconciliation"),
-    scriptsCompleteWithinScope: scriptsComplete(inspection.completeness),
+    scriptsCompleteWithinScope:
+      scriptsComplete(inspection.completeness) &&
+      workerDiscoveryComplete(inspection.completeness) &&
+      inspection.workers.every(
+        (worker) =>
+          worker.observation !== undefined &&
+          ((worker.observation.ownership === "unknown" &&
+            !worker.observation.selected_explicitly) ||
+            (scriptsComplete(worker.observation.completeness) &&
+              workerDiscoveryComplete(worker.observation.completeness))),
+      ),
   };
 };
 
@@ -434,9 +440,7 @@ const assertRuntimeParameters = (
   expected:
     | {
         readonly kind: "browser";
-        readonly targetId: string;
-        readonly targetOrigin: string;
-        readonly sourceIncluded: boolean;
+        readonly inspection: WebPageInspection;
       }
     | {
         readonly kind: "electron";
@@ -450,34 +454,25 @@ const assertRuntimeParameters = (
     include_script_sources: z.boolean(),
   };
   if (expected.kind === "browser") {
-    const parameters = parseAtPath(
+    parseAtPath(
       (value) =>
         z
           .object({
-            ...common,
             cdp_endpoint: recordedBrowserObservationEndpointSchema,
-            allowed_origins: browserAllowedOriginsSchema,
           })
           .passthrough()
           .parse(value),
       evidence.parameters,
       [...path, "parameters"],
     );
-    if (parameters.target_id !== expected.targetId)
-      throw invalidInput(
-        [...path, "parameters", "target_id"],
-        "Runtime Evidence target disagrees with its captured result",
-      );
-    if (!parameters.allowed_origins.includes(expected.targetOrigin))
-      throw invalidInput(
-        [...path, "parameters", "allowed_origins"],
-        "Browser Evidence target is outside its recorded origin scope",
-      );
-    if (expected.sourceIncluded && !parameters.include_script_sources)
-      throw invalidInput(
-        [...path, "parameters", "include_script_sources"],
-        "Runtime Evidence contains source without source-capture selection",
-      );
+    parseAtPath(
+      (value) => browserWorkerEvidenceScopeSchema.parse(value),
+      {
+        parameters: evidence.parameters,
+        normalized_result: expected.inspection,
+      },
+      path,
+    );
     return;
   }
   const parameters = parseAtPath(
@@ -501,7 +496,7 @@ const assertRuntimeParameters = (
     );
 };
 
-const scriptsComplete = (completeness: {
+export const scriptsComplete = (completeness: {
   readonly truncated_sections: readonly string[];
   readonly unavailable_sections: readonly string[];
   readonly dropped_events: { readonly scripts: number };
@@ -509,3 +504,7 @@ const scriptsComplete = (completeness: {
   !completeness.truncated_sections.includes("scripts") &&
   !completeness.unavailable_sections.includes("scripts") &&
   completeness.dropped_events.scripts === 0;
+
+const workerDiscoveryComplete = (completeness: BrowserCompleteness): boolean =>
+  !completeness.unavailable_sections.includes("workers") &&
+  !completeness.truncated_sections.includes("workers");

@@ -54,6 +54,7 @@ export class CdpCaptureEvents implements CdpCaptureEventsState {
   constructor(input: InspectWebPageInput, allowedOrigins: ReadonlySet<string>) {
     this.input = input;
     this.allowedOrigins = allowedOrigins;
+    this.#recordSelectionExclusions();
   }
 
   beginAuthorizedFrame(frameId: string): void {
@@ -79,6 +80,10 @@ export class CdpCaptureEvents implements CdpCaptureEventsState {
     this.responseMetadata.length = 0;
     this.agentHints.length = 0;
     this.completeness.reset();
+    this.#recordSelectionExclusions();
+  }
+
+  #recordSelectionExclusions(): void {
     if (!this.input.include_console_text)
       this.completeness.exclude("console_text", "not_approved", null);
     if (!this.input.include_json_body_shapes)

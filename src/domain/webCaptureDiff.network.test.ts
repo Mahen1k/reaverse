@@ -50,6 +50,45 @@ const redirectCapture = (resourceType: string | null): WebPageInspection => {
   return capture;
 };
 
+it.each([
+  "service_worker",
+  "disk_cache",
+  "service_worker_response_source",
+] as const)(
+  "compares known redirect response source %s without inventing missing facts",
+  (field) => {
+    const before = redirectCapture("Document");
+    Object.assign(before.network.requests[0]!.redirects![0]!, {
+      response_source: {
+        service_worker: false,
+        disk_cache: false,
+        service_worker_response_source: "network",
+      },
+    });
+    const after = structuredClone(before);
+    Object.assign(after.network.requests[0]!.redirects![0]!, {
+      response_source: {
+        service_worker: false,
+        disk_cache: false,
+        service_worker_response_source: "network",
+        [field]:
+          field === "service_worker_response_source" ? "cache-storage" : true,
+      },
+    });
+    expect(compare(before, after)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+    });
+    Object.assign(after.network.requests[0]!.redirects![0]!, {
+      response_source: undefined,
+    });
+    expect(compare(before, after)).toMatchObject({
+      status: "unchanged",
+      total_changes: 0,
+    });
+  },
+);
+
 describe("nullable redirect resource types", () => {
   it.each([true, false])(
     "retains uncertainty when a redirect type is omitted (reversed=%s)",
@@ -88,6 +127,50 @@ describe("nullable redirect resource types", () => {
       status: "changed",
       total_changes: 1,
       changes: [{ change: "added" }],
+    });
+  });
+});
+
+describe("response sources with incomplete network metadata", () => {
+  it("retains a known source change without declaring incomplete redirects equal", () => {
+    const before = redirectCapture(null);
+    before.network.requests[0]!.response_source = {
+      service_worker: false,
+      disk_cache: false,
+      service_worker_response_source: "network",
+    };
+    const after = structuredClone(before);
+    after.network.requests[0]!.response_source!.service_worker = true;
+    expect(compare(before, after)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+    });
+    delete after.network.requests[0]!.response_source;
+    expect(compare(before, after)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
+    before.network.requests[0]!.redirects![0]!.resource_type = "Document";
+    after.network.requests[0]!.redirects![0]!.resource_type = "Document";
+    expect(compare(before, after)).toMatchObject({
+      status: "unchanged",
+      total_changes: 0,
+    });
+  });
+
+  it("does not use response sources to establish an unknown request identity", () => {
+    const before = redirectCapture("Document");
+    before.network.requests[0]!.response_source = {
+      service_worker: false,
+      disk_cache: false,
+      service_worker_response_source: "network",
+    };
+    const after = structuredClone(before);
+    before.network.requests[0]!.resource_type = null;
+    after.network.requests[0]!.response_source!.service_worker = true;
+    expect(compare(before, after)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
     });
   });
 });

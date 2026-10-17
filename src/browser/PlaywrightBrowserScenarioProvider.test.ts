@@ -20,6 +20,7 @@ import {
 import { PLAYWRIGHT_RESPONSE_BODY_PROVENANCE_LIMITATION } from "../domain/browserNetworkEvidence.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { compareBrowserScenarios } from "../domain/browserScenarioDiff.js";
+import { browserScenarioCaptureSchema } from "../domain/browserScenarioCapture.js";
 import { compareBrowserScenariosInputSchema } from "../domain/browserScenarioDiffValues.js";
 import {
   AnalysisCancelledError,
@@ -706,20 +707,34 @@ describe("PlaywrightBrowserScenarioProvider request cancellation", () => {
     const result = await provider.captureScenario(scenario(), {
       signal: controller.signal,
     });
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        _tag: "AnalysisCancelledError",
-        partialObservation: {
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "cancelled",
+      category: "cancelled",
+      details: {
+        partial_observation: {
           kind: "browser-scenario-observation",
           capture: {
             browser: { cleanup: "terminated-owned-process" },
-            steps: [{ status: "completed" }, { status: "cancelled" }],
+            steps: [
+              { step_id: "scenario_start", status: "completed" },
+              { step_id: "wait_0", status: "cancelled" },
+            ],
           },
         },
       },
     });
-    if (result.ok) throw new Error("Expected active scenario cancellation");
+    expect(session.performCalls).toBe(1);
+    const partial = result.error.partialObservation;
+    const capture = browserScenarioCaptureSchema.parse(
+      partial !== undefined &&
+        "kind" in partial &&
+        partial.kind === "browser-scenario-observation"
+        ? partial.capture
+        : undefined,
+    );
+    expect(capture.completeness.status).toBe("incomplete");
     expect(result.error.cause).toBe(cancellationReason);
     expect(session.closeCalls).toBe(1);
   });

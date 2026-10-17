@@ -290,6 +290,11 @@ jobs:
 
   build:
     name: Build package
+    # Keep completed task entries until this job publishes their portable snapshot.
+    # A later dry-plan invocation also starts Turbo's background cache eviction.
+    env:
+      TURBO_CACHE_MAX_AGE: "0"
+      TURBO_CACHE_MAX_SIZE: "0"
     needs: changes
     # Reusable provider workflows consume this run's portable build artifact,
     # even when a workflow-only edit selects the lane without portable tests.
@@ -362,6 +367,11 @@ jobs:
         run: |
           npm run --silent test:prepare -- --dry=json |
             node scripts/ci/portable-build-cache.mjs snapshot
+      - name: Apply normal cache retention after staging
+        shell: bash
+        run: |
+          env -u TURBO_CACHE_MAX_AGE -u TURBO_CACHE_MAX_SIZE \
+            npm run --silent test:prepare -- --dry=json > /dev/null
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rea-build-cache

@@ -67,7 +67,7 @@ export const handleScriptParsed = (
   const scriptId = cdpStringValue(params.scriptId);
   const rawUrl = cdpStringValue(params.url) ?? "";
   const sanitized = allowedSanitizedUrl(rawUrl, state.allowedOrigins);
-  if (scriptId === undefined) {
+  if (scriptId === undefined || scriptId.length === 0) {
     state.completeness.exclude("scripts", "invalid_protocol_value");
     return;
   }
@@ -287,6 +287,7 @@ export const handleRequestWillBeSent = (
           "invalid_protocol_value",
         );
       redirects.push({
+        response_source: responseSource(redirectResponse),
         url: previous.url,
         response_url: responseUrl.url,
         method: previous.method,
@@ -403,6 +404,7 @@ export const handleResponseReceived = (
     ...current,
     status: numberValue(response.status) ?? null,
     mime_type: cdpStringValue(response.mimeType) ?? null,
+    response_source: responseSource(response),
   });
   const metadata = safeResponseMetadata(
     requestId,
@@ -413,6 +415,18 @@ export const handleResponseReceived = (
   state.responseMetadata.push(metadata.response);
   state.agentHints.push(...metadata.agentHints);
 };
+
+/** CDP supplies the same response-source facts on final and redirect responses. */
+const responseSource = (response: Readonly<Record<string, unknown>>) => ({
+  service_worker:
+    typeof response.fromServiceWorker === "boolean"
+      ? response.fromServiceWorker
+      : null,
+  disk_cache:
+    typeof response.fromDiskCache === "boolean" ? response.fromDiskCache : null,
+  service_worker_response_source:
+    cdpStringValue(response.serviceWorkerResponseSource) ?? null,
+});
 
 export const handleLoadingFinished = (
   state: CdpCaptureEventsState,

@@ -581,6 +581,8 @@ it("retains native Inspector verification on every documented package host", asy
 });
 
 it.each([
+  ["src/browser/CdpCaptureEventHandlers.ts", { web_runtime: true }],
+  ["src/browser/assets/PageScriptCapture.ts", { web_runtime: true }],
   [
     "src/evm/client.ts",
     {

@@ -1,36 +1,48 @@
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { resolve } from "node:path";
+import { symlink } from "node:fs/promises";
 import { expect } from "vitest";
 
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
+import { resolveExecutable } from "../../../src/process/capture/ProcessScenarioRuntimeValidation.js";
 import { workspaceCliTest as test } from "../../support/cli/workspaceCliFixture.js";
 import type { TestWorkspace } from "../../support/workspace/workspaceFixture.js";
 
-const isolatedEnvironment = (workspace: TestWorkspace) => ({
-  // Discovery still needs the host's process-ownership prerequisites, such as ps.
-  PATH: process.env.PATH ?? "",
-  HOME: workspace.home,
-  USERPROFILE: workspace.home,
-  APPDATA: workspace.path("appdata"),
-  LOCALAPPDATA: workspace.path("localappdata"),
-  XDG_CONFIG_HOME: workspace.path("config"),
-  XDG_CACHE_HOME: workspace.path("cache"),
-  TEMP: workspace.root,
-  TMP: workspace.root,
-  ...(process.platform === "win32"
-    ? { SystemRoot: process.env.SystemRoot ?? "" }
-    : {}),
-  HOPPER_LAUNCHER_PATH: workspace.path("missing-hopper"),
-  REA_LOG_LEVEL: "silent",
-  REA_JEB_MCP_TIMEOUT_MS: "1.5",
-});
+const isolatedEnvironment = async (workspace: TestWorkspace) => {
+  let searchPath = "";
+  if (process.platform === "linux") {
+    // Retain only the real process owner's prerequisite, not ambient providers.
+    searchPath = await workspace.mkdir("bin");
+    await symlink(
+      await resolveExecutable("ps", process.cwd(), process.env.PATH ?? ""),
+      workspace.path("bin", "ps"),
+    );
+  }
+  return {
+    PATH: searchPath,
+    HOME: workspace.home,
+    USERPROFILE: workspace.home,
+    APPDATA: workspace.path("appdata"),
+    LOCALAPPDATA: workspace.path("localappdata"),
+    XDG_CONFIG_HOME: workspace.path("config"),
+    XDG_CACHE_HOME: workspace.path("cache"),
+    TEMP: workspace.root,
+    TMP: workspace.root,
+    ...(process.platform === "win32"
+      ? { SystemRoot: process.env.SystemRoot ?? "" }
+      : {}),
+    HOPPER_LAUNCHER_PATH: workspace.path("missing-hopper"),
+    REA_LOG_LEVEL: "silent",
+    REA_JEB_MCP_TIMEOUT_MS: "1.5",
+  };
+};
 
 test("keeps compiled CLI discovery usable while JEB rejects its malformed timeout", async ({
   cli,
   workspace,
 }) => {
-  const environment = isolatedEnvironment(workspace);
+  const environment = await isolatedEnvironment(workspace);
   for (const command of ["capabilities", "providers"]) {
     const result = await cli.run({
       arguments: [command, "--json"],
@@ -63,7 +75,7 @@ test("starts production stdio MCP and retains peer requests around a JEB configu
     command: process.execPath,
     args: [resolve("scripts/rea.mjs"), "mcp"],
     cwd: workspace.root,
-    env: isolatedEnvironment(workspace),
+    env: await isolatedEnvironment(workspace),
     stderr: "pipe",
   });
   const client = new Client({ name: "jeb-isolation-acceptance", version: "1" });
